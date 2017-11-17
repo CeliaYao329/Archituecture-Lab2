@@ -1,0 +1,8 @@
+1. 数据冒险：
+	如果Decode阶段发现，[ID_EX.RegA or ID_EX.RegB] 与 [ID_EX.Ctrl_EX_RegDst or EX_MEM.Ctrl_EX_RegDst or MEM_WR.Ctrl_EX_RegDst] 中的任一一个冲突，那么PC和IF_ID不变，并把ID_EX的控制全部清零
+
+2. （不考虑return的）控制冒险：
+	采用默认不跳转的方式
+	如果发现在MEM阶段发现跳转，ID_EX清零，IF_ID清零，PC设为跳转的地址
+
+3. 乘除法在操作上和其他一样，只是在计算cycle_cnt的时候加数不一样

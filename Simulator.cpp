@@ -68,7 +68,7 @@ int main(int argc, char* argv[]) {
     
     reg[3] = (REG)global_pointer; // Global pointer
     printf("\n");
-    printf("Global pointer = %llx", reg[3]);
+    printf("Global pointer = %llx\n", reg[3]);
     
     simulate();
     
@@ -77,16 +77,20 @@ int main(int argc, char* argv[]) {
     printf("Please choose:\n");
     printf("[1] Check register\n");
     printf("[2] Check memory\n");
-    printf("[3] Exit\n");
+    printf("[3] Check CPI\n");
+    printf("[4] Exit\n");
     
     char choice;
     cin >> choice;
-    while (choice == '1' || choice == '2') {
+    while (choice == '1' || choice == '2' || choice == '3' ) {
         if (choice == '1') {
             print_reg();
         }
-        else {
+        else if (choice == '2') {
             print_mem();
+        }
+        else if(choice == '3'){
+            print_CPI();
         }
         printf("\n");
         printf("Please choose:\n");
@@ -113,13 +117,29 @@ void load_memory(const char * filename) {
 void simulate() {
     unsigned long end = endpc_main;
     while (PC != end) {
-        printf("\n");
-        printf("Executing instruction at 0x%lx\n", PC);
+        //every iteration simulates one time cycle
+        cycle_cnt ++;
+
+        //printf("\n");
+        //printf("Executing the %lld instruction at 0x%lx\n", instruction_cnt, PC);
         IF();
         ID();
         EX();
         MEM();
         WB();
+
+        
+        if(IF_ID_stall) IF_ID_reset();
+        else if(!IF_ID_stall) IF_ID_update();
+        IF_ID_bubble = 0;
+        IF_ID_stall = 0;
+
+        if(ID_EX_bubble) ID_EX_reset();
+        else ID_EX_update();
+        ID_EX_bubble = 0;
+        EX_MEM_update();
+        MEM_WB_update();
+
         if (step_mode == true) {
             printf("\n");
             printf("Please choose:\n");
@@ -174,12 +194,29 @@ void print_mem() {
     }
 }
 
-void IF() {
-    // Write IF_ID
-    IF_ID.inst = *((unsigned int *) &memory[PC]);
-    // PC = PC + 4;
-    IF_ID.PC = PC;
+void print_CPI(){
+    printf("Cycle number: %lld \n",cycle_cnt);
+    printf("Instruction number: %lld \n",instruction_cnt);
+    printf("CPI: %.2f\n",double(cycle_cnt/instruction_cnt));
 }
+
+void IF() {
+    iif.inst = *((unsigned int *) &memory[PC]);
+    iif.PC = PC;
+}
+
+void IF_ID_update(){
+    // Write IF_ID
+    IF_ID.inst = iif.inst;
+    // PC = PC + 4;
+    IF_ID.PC = iif.PC;
+}
+
+void IF_ID_reset(){
+    IF_ID.inst = 0;
+    IF_ID.PC = 0;
+}
+
 
 void ID() {
     // Read IF_ID
@@ -200,6 +237,7 @@ void ID() {
     unsigned char MemtoReg = 0;
     unsigned char RegDst = 0;
     
+    //instruction decoding
     unsigned int OP = getbit(inst, 0, 7);
     unsigned int rd = getbit(inst, 7, 5);
     unsigned int rs1 = getbit(inst, 15, 5);
@@ -211,7 +249,7 @@ void ID() {
     
     unsigned int s_imm = getbit(inst, 25, 7) << 5;
     s_imm += getbit(inst, 7, 5);
-    
+
     // {offset, 1b'0}
     unsigned int sb_imm = getbit(inst, 31, 1) << 12;
     sb_imm += getbit(inst, 7, 1) << 11;
@@ -229,6 +267,20 @@ void ID() {
     
     // Register Arithmetic
     if (OP == OP_R) {
+        
+        //data hazard
+        // TODO
+        if(rs1 == ID_EX.Ctrl_EX_RegDst || rs1 == EX_MEM.Ctrl_EX_RegDst || rs1 == MEM_WB.Ctrl_EX_RegDst){
+            ID_EX_bubble = 1;
+            PC_stall = 1;
+            IF_ID_stall = 1;
+        }
+        else if (rs2 == ID_EX.Ctrl_EX_RegDst || rs2 == EX_MEM.Ctrl_EX_RegDst || rs2 == MEM_WB.Ctrl_EX_RegDst){
+            ID_EX_bubble = 1;
+            PC_stall = 1;
+            IF_ID_stall = 1;
+        }
+
         cout << "DEBUG: Register Arith" << endl;
         ValA = reg[rs1];
         ValB = reg[rs2];
@@ -314,6 +366,13 @@ void ID() {
     // Load from memory
     else if (OP == OP_L) {
         cout << "DEBUG: Load" << endl;
+
+        if(rs1 == ID_EX.Ctrl_EX_RegDst || rs1 == EX_MEM.Ctrl_EX_RegDst || rs1 == MEM_WB.Ctrl_EX_RegDst){
+            ID_EX_bubble = 1;
+            PC_stall = 1;
+            IF_ID_stall = 1;
+        }
+
         // lx rd, offset(rs1)
         // R[rd] <- SignExt(Mem(R[rs1] + offset, size))
         ValA = reg[rs1];
@@ -340,6 +399,16 @@ void ID() {
         cout << "DEBUG: NEW INSTR" << endl;
         ValA = reg[rs1];
         ValB = reg[rs2];
+        if(rs1 == ID_EX.Ctrl_EX_RegDst || rs1 == EX_MEM.Ctrl_EX_RegDst || rs1 == MEM_WB.Ctrl_EX_RegDst){
+            ID_EX_bubble = 1;
+            PC_stall = 1;
+            IF_ID_stall = 1;
+        }
+        if(rs2 == ID_EX.Ctrl_EX_RegDst || rs2 == EX_MEM.Ctrl_EX_RegDst || rs2 == MEM_WB.Ctrl_EX_RegDst){
+            ID_EX_bubble = 1;
+            PC_stall = 1;
+            IF_ID_stall = 1;
+        }
         RegWrite = 1;
         RegDst = rd;
         ALUOp = ALU_ADD;
@@ -348,6 +417,12 @@ void ID() {
     // Immediate Arithmetic
     else if (OP == OP_I) {
         cout << "DEBUG: Immediate Arith" << endl;
+        if(rs1 == ID_EX.Ctrl_EX_RegDst || rs1 == EX_MEM.Ctrl_EX_RegDst || rs1 == MEM_WB.Ctrl_EX_RegDst){
+            ID_EX_bubble = 1;
+            PC_stall = 1;
+            IF_ID_stall = 1;
+        }
+
         ValA = reg[rs1];
         RegWrite = 1;
         RegDst = rd;
@@ -407,6 +482,13 @@ void ID() {
     
     // Wide Immediate Arithmetic
     else if (OP == OP_IW) {
+
+        if(rs1 == ID_EX.Ctrl_EX_RegDst || rs1 == EX_MEM.Ctrl_EX_RegDst || rs1 == MEM_WB.Ctrl_EX_RegDst){
+            ID_EX_bubble = 1;
+            PC_stall = 1;
+            IF_ID_stall = 1;
+        }
+
         cout << "DEBUG: Wide Immediate Arith" << endl;
         if (funct3 == F3_ADDIW) {
             // addiw rd, rs1, imm
@@ -450,6 +532,12 @@ void ID() {
     }
     
     else if (OP == OP_JALR) {
+        if(rs1 == ID_EX.Ctrl_EX_RegDst || rs1 == EX_MEM.Ctrl_EX_RegDst || rs1 == MEM_WB.Ctrl_EX_RegDst){
+            ID_EX_bubble = 1;
+            PC_stall = 1;
+            IF_ID_stall = 1;
+        }
+
         cout << "DEBUG: Jump and link register" << endl;
         // jalr rd, rs1, imm
         // R[rd] <- PC + 4
@@ -472,6 +560,17 @@ void ID() {
     }
     
     else if (OP == OP_S) {
+        if(rs1 == ID_EX.Ctrl_EX_RegDst || rs1 == EX_MEM.Ctrl_EX_RegDst || rs1 == MEM_WB.Ctrl_EX_RegDst){
+            ID_EX_bubble = 1;
+            PC_stall = 1;
+            IF_ID_stall = 1;
+        }
+        if(rs2 == ID_EX.Ctrl_EX_RegDst || rs2 == EX_MEM.Ctrl_EX_RegDst || rs2 == MEM_WB.Ctrl_EX_RegDst){
+            ID_EX_bubble = 1;
+            PC_stall = 1;
+            IF_ID_stall = 1;
+        }
+
         cout << "DEBUG: Store" << endl;
         // sx rs2, offset(rs1)
         // Mem(R[rs1] + offset) <- R[rs2][x:0]
@@ -493,6 +592,18 @@ void ID() {
     }
     
     else if (OP == OP_B) {
+
+        if(rs1 == ID_EX.Ctrl_EX_RegDst || rs1 == EX_MEM.Ctrl_EX_RegDst || rs1 == MEM_WB.Ctrl_EX_RegDst){
+            ID_EX_bubble = 1;
+            PC_stall = 1;
+            IF_ID_stall = 1;
+        }
+        if(rs2 == ID_EX.Ctrl_EX_RegDst || rs2 == EX_MEM.Ctrl_EX_RegDst || rs2 == MEM_WB.Ctrl_EX_RegDst){
+            ID_EX_bubble = 1;
+            PC_stall = 1;
+            IF_ID_stall = 1;
+        }
+
         cout << "DEBUG: Branch" << endl;
         // bxx rs1, rs2, offset
         // if (R[rs1] ?? R[rs2])
@@ -559,25 +670,24 @@ void ID() {
         Branch = 1;
     }
     
-    // Implementation of SEQ
     // Write ID_EX
-    ID_EX.PC = PC;
+    id.PC = PC;
     
     // Control signals for execute
-    ID_EX.ValA = ValA;
-    ID_EX.ValB = ValB;
-    ID_EX.Ctrl_EX_ALUOp = ALUOp;
+    id.ValA = ValA;
+    id.ValB = ValB;
+    id.Ctrl_EX_ALUOp = ALUOp;
     
     // Control signals for memory
-    ID_EX.Ctrl_M_Branch = Branch;
-    ID_EX.Ctrl_M_MemRead = MemRead;
-    ID_EX.Ctrl_M_MemWrite = MemWrite;
-    ID_EX.rs2 = rs2;
+    id.Ctrl_M_Branch = Branch;
+    id.Ctrl_M_MemRead = MemRead;
+    id.Ctrl_M_MemWrite = MemWrite;
+    id.rs2 = rs2;
     
     // Control signals for write back
-    ID_EX.Ctrl_WB_RegWrite = RegWrite;
-    ID_EX.Ctrl_WB_MemtoReg = MemtoReg;
-    ID_EX.Ctrl_EX_RegDst = RegDst;
+    id.Ctrl_WB_RegWrite = RegWrite;
+    id.Ctrl_WB_MemtoReg = MemtoReg;
+    id.Ctrl_EX_RegDst = RegDst;
 
     if (step_mode == true) {
         printf("DEBUG: ValA = %lx\n", ValA);
@@ -587,6 +697,50 @@ void ID() {
         printf("DEBUG: RegWrite = %i\n", RegWrite);
         printf("DEBUG: MemtoReg = %i\n", MemtoReg);
     }
+}
+
+void ID_EX_update(){
+    // Implementation of SEQ
+    // Write ID_EX
+    ID_EX.PC = id.PC;
+    
+    // Control signals for execute
+    ID_EX.ValA = id.ValA;
+    ID_EX.ValB = id.ValB;
+    ID_EX.Ctrl_EX_ALUOp = id.Ctrl_EX_ALUOp;
+    
+    // Control signals for memory
+    ID_EX.Ctrl_M_Branch = id.Ctrl_M_Branch;
+    ID_EX.Ctrl_M_MemRead = id.Ctrl_M_MemRead;
+    ID_EX.Ctrl_M_MemWrite = id.Ctrl_M_MemWrite;
+    ID_EX.rs2 = id.rs2;
+    
+    // Control signals for write back
+    ID_EX.Ctrl_WB_RegWrite = id.Ctrl_WB_RegWrite;
+    ID_EX.Ctrl_WB_MemtoReg = id.Ctrl_WB_MemtoReg;
+    ID_EX.Ctrl_EX_RegDst = id.Ctrl_EX_RegDst;
+}
+
+void ID_EX_reset(){
+    // Implementation of SEQ
+    // Write ID_EX
+    ID_EX.PC = 0;
+    
+    // Control signals for execute
+    ID_EX.ValA = 0;
+    ID_EX.ValB = 0;
+    ID_EX.Ctrl_EX_ALUOp = 0;
+    
+    // Control signals for memory
+    ID_EX.Ctrl_M_Branch = 0;
+    ID_EX.Ctrl_M_MemRead = 0;
+    ID_EX.Ctrl_M_MemWrite = 0;;
+    ID_EX.rs2 = id.rs2;
+    
+    // Control signals for write back
+    ID_EX.Ctrl_WB_RegWrite = 0;
+    ID_EX.Ctrl_WB_MemtoReg = 0;
+    ID_EX.Ctrl_EX_RegDst = 0;
 }
 
 void EX() {
@@ -653,26 +807,50 @@ void EX() {
             break;
         default:;
     }
-    
+
     // Implementation of SEQ
     // Write EX_MEM
-    EX_MEM.PC = PC;
-    EX_MEM.ALU_out = ALU_out;
+    ex.PC = PC;
+    ex.ALU_out = ALU_out;
     
     if (step_mode == true) {
         printf("DEBUG: ALU_out = %llx\n", ALU_out);
     }
     
     // Control signals for memory
-    EX_MEM.Ctrl_M_Branch = Branch;
-    EX_MEM.Ctrl_M_MemRead = MemRead;
-    EX_MEM.Ctrl_M_MemWrite = MemWrite;
-    EX_MEM.rs2 = rs2;
+    ex.Ctrl_M_Branch = Branch;
+    ex.Ctrl_M_MemRead = MemRead;
+    ex.Ctrl_M_MemWrite = MemWrite;
+    ex.rs2 = rs2;
     
     // Control signals for write back
-    EX_MEM.Ctrl_WB_RegWrite = RegWrite;
-    EX_MEM.Ctrl_WB_MemtoReg = MemtoReg;
-    EX_MEM.Ctrl_EX_RegDst = RegDst;
+    ex.Ctrl_WB_RegWrite = RegWrite;
+    ex.Ctrl_WB_MemtoReg = MemtoReg;
+    ex.Ctrl_EX_RegDst = RegDst;
+
+    if (step_mode == true) {
+        printf("DEBUG: ALU_out = %llx\n", ALU_out);
+    }
+
+}
+
+void EX_MEM_update(){
+    // Implementation of SEQ
+    // Write EX_MEM
+    EX_MEM.PC = ex.PC;
+    EX_MEM.ALU_out = ex.ALU_out;
+    
+    
+    // Control signals for memory
+    EX_MEM.Ctrl_M_Branch = ex.Ctrl_M_Branch;
+    EX_MEM.Ctrl_M_MemRead = ex.Ctrl_M_MemRead;
+    EX_MEM.Ctrl_M_MemWrite = ex.Ctrl_M_MemWrite;
+    EX_MEM.rs2 = ex.rs2;
+    
+    // Control signals for write back
+    EX_MEM.Ctrl_WB_RegWrite = ex.Ctrl_WB_RegWrite;
+    EX_MEM.Ctrl_WB_MemtoReg = ex.Ctrl_WB_MemtoReg ;
+    EX_MEM.Ctrl_EX_RegDst = ex.Ctrl_EX_RegDst;
 }
 
 void MEM() {
@@ -721,29 +899,49 @@ void MEM() {
         *((unsigned long long *) &memory[ALU_out]) = reg[rs2];
     }
     
+    // Write MEM_WB
+    mem.ALU_out = ALU_out;
+    mem.Mem_out = Mem_out;
+    
+    // Control signals fro write back
+    mem.Ctrl_WB_RegWrite = RegWrite;
+    mem.Ctrl_WB_MemtoReg = MemtoReg;
+    mem.Ctrl_EX_RegDst = RegDst;
+    
+    // Update PC
+    if (!PC_stall){
+        if (Branch) { 
+            PC = ALU_out;
+            if (AlignPC) {
+                PC &= ~0x1;
+            }
+
+            //control hazard
+            ID_EX_reset();
+            IF_ID_reset();
+        }
+        else {
+        PC = PC + 4;
+        }
+    }
+    PC_stall = 0;
+
     if (step_mode == true) {
         printf("DEBUG: Mem_out = %llx\n", Mem_out);
     }
-    
+
+}
+
+void MEM_WB_update(){
     // Write MEM_WB
-    MEM_WB.ALU_out = ALU_out;
-    MEM_WB.Mem_out = Mem_out;
+    MEM_WB.ALU_out = mem.ALU_out;
+    MEM_WB.Mem_out = mem.Mem_out;
     
     // Control signals fro write back
-    MEM_WB.Ctrl_WB_RegWrite = RegWrite;
-    MEM_WB.Ctrl_WB_MemtoReg = MemtoReg;
-    MEM_WB.Ctrl_EX_RegDst = RegDst;
+    MEM_WB.Ctrl_WB_RegWrite = mem.Ctrl_WB_RegWrite;
+    MEM_WB.Ctrl_WB_MemtoReg = mem.Ctrl_WB_MemtoReg;
+    MEM_WB.Ctrl_EX_RegDst = mem.Ctrl_EX_RegDst;
     
-    // Update PC
-    if (Branch) {
-        PC = ALU_out;
-        if (AlignPC) {
-            PC &= ~0x1;
-        }
-    }
-    else {
-        PC = PC + 4;
-    }
 }
 
 void WB() {
@@ -758,6 +956,9 @@ void WB() {
     
     // Write reg
     if (RegWrite == 1 && RegDst != 0) {
+
+        cycle_cnt++;
+        
         if (MemtoReg == 0) { // write from ALU
             reg[RegDst] = ALU_out;
         }

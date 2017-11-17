@@ -28,16 +28,28 @@ REG reg[32] = {0};
 // PC
 unsigned long PC = 0;
 
+//CPI calculation
+unsigned long long instruction_cnt = 0;
+unsigned long long cycle_cnt = 0;
+
 void load_memory(const char * filename);
 void simulate();
 void print_reg();
 void print_mem();
+void print_CPI();
 
 void IF();
 void ID();
 void EX();
 void MEM();
 void WB();
+
+void IF_ID_update();
+void ID_EX_update();
+void EX_MEM_update();
+void MEM_WB_update();
+void ID_EX_reset();
+void IF_ID_reset();
 
 // Get cnt bits starting from position s
 unsigned int getbit(unsigned inst, int s, int cnt) {
